@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 # معرفات المشرفين (ضع معرف التليجرام الخاص بك هنا)
-ADMIN_IDS = [123456789]  # غير هذا إلى معرفك الحقيقي
+ADMIN_IDS = [8798182716]  # غير هذا إلى معرفك الحقيقي
 
 # معرف القناة
 CHANNEL_USERNAME = "@pngo2"
