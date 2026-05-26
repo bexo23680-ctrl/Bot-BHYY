@@ -51,6 +51,7 @@ class Database:
                 anonymous_id TEXT,
                 content TEXT,
                 status TEXT DEFAULT 'pending',
+                is_locked BOOLEAN DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 reviewed_at TIMESTAMP,
                 FOREIGN KEY (sender_id) REFERENCES users (user_id)
@@ -202,19 +203,6 @@ class Database:
         conn.commit()
         conn.close()
     
-    def record_channel_message(self, sender_id, content):
-        """تسجيل رسالة قناة"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO messages (sender_id, recipient_id, content, is_channel_message) VALUES (?, 0, ?, 1)",
-            (sender_id, content)
-        )
-        
-        conn.commit()
-        conn.close()
-    
     def add_pending_message(self, sender_id, anonymous_id, content):
         """إضافة رسالة معلقة للمراجعة"""
         conn = sqlite3.connect(self.db_path)
@@ -237,8 +225,8 @@ class Database:
             """
             SELECT id, sender_id, anonymous_id, content, created_at 
             FROM pending_messages 
-            WHERE status = 'pending' 
-            ORDER BY created_at DESC
+            WHERE status = 'pending' AND is_locked = 0
+            ORDER BY created_at ASC
             """
         )
         results = cursor.fetchall()
@@ -263,13 +251,51 @@ class Database:
         
         return result[0] if result else None
     
+    def is_message_pending(self, message_id):
+        """التحقق مما إذا كانت الرسالة لا تزال معلقة وغير مقفلة"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT status FROM pending_messages WHERE id = ? AND status = 'pending' AND is_locked = 0",
+            (message_id,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result is not None
+    
+    def lock_message(self, message_id):
+        """قفل رسالة لمنع المعالجة المتكررة"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE pending_messages SET is_locked = 1 WHERE id = ?",
+            (message_id,)
+        )
+        conn.commit()
+        conn.close()
+    
+    def unlock_message(self, message_id):
+        """فك قفل رسالة"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "UPDATE pending_messages SET is_locked = 0 WHERE id = ?",
+            (message_id,)
+        )
+        conn.commit()
+        conn.close()
+    
     def approve_message(self, message_id):
         """الموافقة على رسالة"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute(
-            "UPDATE pending_messages SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE pending_messages SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP, is_locked = 1 WHERE id = ?",
             (message_id,)
         )
         conn.commit()
@@ -281,7 +307,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute(
-            "UPDATE pending_messages SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE pending_messages SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, is_locked = 1 WHERE id = ?",
             (message_id,)
         )
         conn.commit()
@@ -336,7 +362,7 @@ class Database:
         }
     
     def get_all_users(self):
-        """الحصول على جميع المستخدمين"""
+        """الحصول على جميع المستخدمين النشطين"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -345,34 +371,3 @@ class Database:
         conn.close()
         
         return [{'user_id': r[0], 'username': r[1]} for r in results]
-    
-    def get_global_stats(self):
-        """الحصول على إحصائيات عامة"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned = 0")
-        active_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
-        banned_users = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM messages")
-        total_messages = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT COUNT(*) FROM messages WHERE is_channel_message = 1")
-        channel_messages = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        return {
-            'total_users': total_users,
-            'active_users': active_users,
-            'banned_users': banned_users,
-            'total_messages': total_messages,
-            'channel_messages': channel_messages,
-            'last_update': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
