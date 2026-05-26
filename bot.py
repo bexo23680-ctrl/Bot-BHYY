@@ -6,6 +6,7 @@ from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
 from database import Database
 import uuid
+from datetime import datetime
 
 # إعداد التسجيل
 logging.basicConfig(
@@ -17,12 +18,13 @@ logger = logging.getLogger(__name__)
 # تهيئة قاعدة البيانات
 db = Database()
 
-# معرفات المشرفين (ضع معرف التليجرام الخاص بك هنا)
-ADMIN_IDS = [8798182716]  # غير هذا إلى معرفك الحقيقي
+# معرف المشرف الرئيسي
+ADMIN_ID = 8798182716  # معرفك الخاص
+ADMIN_IDS = [ADMIN_ID]  # قائمة المشرفين
 
 # معرف القناة
 CHANNEL_USERNAME = "@pngo2"
-CHANNEL_ID = "@pngo2"  # يمكن استخدام المعرف الرقمي أيضا
+CHANNEL_ID = "@pngo2"  # يجب أن يكون البوت مشرفاً في هذه القناة
 
 async def check_subscription(user_id, context):
     """التحقق من اشتراك المستخدم في القناة"""
@@ -52,13 +54,22 @@ async def subscription_required(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        f"⚠️ *يجب الاشتراك في القناة أولاً*\n\n"
-        f"عليك الاشتراك في قناة {CHANNEL_USERNAME} لتتمكن من استخدام البوت.\n\n"
-        f"بعد الاشتراك، اضغط على زر 'تحقق من الاشتراك'",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=reply_markup
-    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            f"⚠️ *يجب الاشتراك في القناة أولاً*\n\n"
+            f"عليك الاشتراك في قناة {CHANNEL_USERNAME} لتتمكن من استخدام البوت.\n\n"
+            f"بعد الاشتراك، اضغط على زر 'تحقق من الاشتراك'",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"⚠️ *يجب الاشتراك في القناة أولاً*\n\n"
+            f"عليك الاشتراك في قناة {CHANNEL_USERNAME} لتتمكن من استخدام البوت.\n\n"
+            f"بعد الاشتراك، اضغط على زر 'تحقق من الاشتراك'",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
 
 async def is_admin(user_id):
     """التحقق مما إذا كان المستخدم مشرفاً"""
@@ -74,6 +85,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not is_subscribed and not await is_admin(user_id):
         await subscription_required(update, context)
+        return
+    
+    # التحقق من الحظر
+    if db.is_user_banned(user_id):
+        await update.message.reply_text(
+            "🚫 *أنت محظور من استخدام البوت*\n\n"
+            "تم حظرك من قبل المشرفين.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     # إنشاء أو الحصول على المستخدم
@@ -103,6 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # إضافة أزرار المشرفين
     if await is_admin(user_id):
         keyboard.append([InlineKeyboardButton("👑 لوحة المشرف", callback_data="admin_panel")])
+        keyboard.append([InlineKeyboardButton("📋 الرسائل المعلقة", callback_data="pending_messages")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -132,14 +153,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 2️⃣ *لإرسال للقناة:*
    - اضغط على "📢 إرسال للقناة"
-   - اكتب رسالتك وستنشر في القناة بشكل مجهول
+   - اكتب رسالتك
+   - سترسل للمشرف للمراجعة ثم تنشر في القناة
 
 3️⃣ *لاستقبال الرسائل المجهولة:*
    - اضغط على "📨 استقبال الرسائل"
    - سترى أحدث الرسائل المجهولة التي وصلتك
-
-4️⃣ *مشاركة معرفك:*
-   - اضغط على "🔗 الحصول على رابطي" لمشاركته
 
 ⚠️ *تنبيه مهم:* 
 الرجاء استخدام البوت بمسؤولية وعدم إرسال محتوى مسيء.
@@ -179,15 +198,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if callback_data != "check_subscription":
         is_subscribed = await check_subscription(user_id, context)
         if not is_subscribed and not await is_admin(user_id):
-            await query.edit_message_text(
-                f"⚠️ *يجب الاشتراك في القناة أولاً*\n\n"
-                f"عليك الاشتراك في قناة {CHANNEL_USERNAME} لتتمكن من استخدام البوت.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📢 اشترك في القناة", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
-                    [InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_subscription")]
-                ])
-            )
+            await subscription_required(update, context)
             return
     
     try:
@@ -222,6 +233,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if await is_admin(user_id):
                 keyboard.append([InlineKeyboardButton("👑 لوحة المشرف", callback_data="admin_panel")])
+                keyboard.append([InlineKeyboardButton("📋 الرسائل المعلقة", callback_data="pending_messages")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -240,8 +252,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await query.edit_message_text(
                 f"📢 *إرسال رسالة مجهولة للقناة*\n\n"
-                f"اكتب رسالتك الآن وسيتم نشرها في قناة {CHANNEL_USERNAME} بشكل مجهول.\n\n"
-                f"⚠️ *تنبيه:* الرسائل المسيئة سيتم حذفها وقد تتعرض للحظر.",
+                f"اكتب رسالتك الآن.\n"
+                f"سيتم إرسالها للمشرف للمراجعة ثم تنشر في قناة {CHANNEL_USERNAME}.\n\n"
+                f"⚠️ *تنبيه:* الرسائل المسيئة سيتم رفضها.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup
             )
@@ -430,20 +443,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ هذا الأمر للمشرفين فقط!", show_alert=True)
                 return
             
-            admin_text = """
+            pending_count = len(db.get_pending_messages())
+            
+            admin_text = f"""
 👑 *لوحة تحكم المشرف*
 
-📊 *إحصائيات عامة:*
-- عدد المستخدمين: جاري التحميل...
-- عدد الرسائل: جاري التحميل...
+📊 *معلومات سريعة:*
+- الرسائل المعلقة: {pending_count}
 
 🛠 *الأوامر المتاحة:*
 - `/ban [user_id]` - حظر مستخدم
 - `/unban [user_id]` - فك حظر مستخدم
 - `/broadcast [message]` - إرسال رسالة للجميع
-- `/stats_all` - إحصائيات كاملة
 """
             keyboard = [
+                [InlineKeyboardButton(f"📋 الرسائل المعلقة ({pending_count})", callback_data="pending_messages")],
                 [InlineKeyboardButton("📋 قائمة المحظورين", callback_data="banned_list")],
                 [InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")]
             ]
@@ -454,6 +468,104 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=reply_markup
             )
+        
+        # الرسائل المعلقة
+        elif callback_data == "pending_messages":
+            if not await is_admin(user_id):
+                await query.answer("❌ هذا الأمر للمشرفين فقط!", show_alert=True)
+                return
+            
+            pending = db.get_pending_messages()
+            
+            if not pending:
+                keyboard = [[InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    "📋 *لا توجد رسائل معلقة للمراجعة*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            else:
+                # عرض أول رسالة معلقة
+                msg = pending[0]
+                message_text = f"""
+📋 *رسالة معلقة للمراجعة* (1/{len(pending)})
+
+📝 *المحتوى:*
+{msg['content']}
+
+📅 *التاريخ:* {msg['created_at']}
+👤 *معرف المرسل:* `{msg['anonymous_id']}`
+"""
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ قبول", callback_data=f"approve_{msg['id']}"),
+                        InlineKeyboardButton("❌ رفض", callback_data=f"reject_{msg['id']}")
+                    ],
+                    [InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # تخزين قائمة الرسائل المعلقة
+                context.user_data['pending_messages'] = pending
+                context.user_data['pending_index'] = 0
+                
+                await query.edit_message_text(
+                    message_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+        
+        # قبول رسالة للقناة
+        elif callback_data.startswith("approve_"):
+            if not await is_admin(user_id):
+                await query.answer("❌ هذا الأمر للمشرفين فقط!", show_alert=True)
+                return
+            
+            message_id = int(callback_data.replace("approve_", ""))
+            
+            # الحصول على محتوى الرسالة
+            message_content = db.get_pending_message_content(message_id)
+            
+            if message_content:
+                try:
+                    # نشر الرسالة في القناة
+                    await context.bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=f"📨 *رسالة مجهولة جديدة:*\n\n{message_content}\n\n💡 *تم الإرسال عبر بوت المراسلة المجهولة*",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    
+                    # تحديث حالة الرسالة إلى منشورة
+                    db.approve_message(message_id)
+                    
+                    await query.answer("✅ تم نشر الرسالة في القناة!", show_alert=True)
+                    
+                    # عرض الرسالة المعلقة التالية
+                    await button_callback(update, context)
+                    
+                except Exception as e:
+                    logger.error(f"Error posting to channel: {e}")
+                    await query.answer("❌ فشل النشر في القناة. تأكد من صلاحيات البوت!", show_alert=True)
+            else:
+                await query.answer("❌ الرسالة غير موجودة!", show_alert=True)
+        
+        # رفض رسالة للقناة
+        elif callback_data.startswith("reject_"):
+            if not await is_admin(user_id):
+                await query.answer("❌ هذا الأمر للمشرفين فقط!", show_alert=True)
+                return
+            
+            message_id = int(callback_data.replace("reject_", ""))
+            
+            # رفض الرسالة
+            db.reject_message(message_id)
+            
+            await query.answer("❌ تم رفض الرسالة!", show_alert=True)
+            
+            # عرض الرسالة المعلقة التالية
+            await button_callback(update, context)
         
         # قائمة المحظورين
         elif callback_data == "banned_list":
@@ -469,6 +581,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 banned_text = "📋 *قائمة المحظورين:*\n\n"
                 for user in banned_users:
                     banned_text += f"- `{user['user_id']}` ({user['username'] or 'بدون اسم'})\n"
+                    banned_text += f"  السبب: {user['ban_reason'] or 'غير محدد'}\n\n"
             
             keyboard = [[InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -506,12 +619,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in button_callback: {e}")
-        await query.edit_message_text(
-            "❌ حدث خطأ. الرجاء المحاولة مرة أخرى.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")
-            ]])
-        )
+        try:
+            await query.edit_message_text(
+                "❌ حدث خطأ. الرجاء المحاولة مرة أخرى.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")
+                ]])
+            )
+        except:
+            pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة جميع الرسائل النصية"""
@@ -538,36 +654,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     state = context.user_data.get('state')
     
-    # إرسال للقناة
+    # إرسال للقناة (نظام المراجعة)
     if state == 'sending_to_channel':
+        # حفظ الرسالة كرسالة معلقة للمراجعة
+        anonymous_id = db.get_anonymous_id(user_id)
+        db.add_pending_message(user_id, anonymous_id, message_text)
+        
+        # إرسال إشعار للمشرف
         try:
-            # إرسال الرسالة للقناة
             await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=f"📨 *رسالة مجهولة جديدة:*\n\n{message_text}\n\n💡 *تم الإرسال عبر بوت المراسلة المجهولة*",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            # تسجيل الرسالة
-            db.record_channel_message(user_id, message_text)
-            
-            keyboard = [
-                [InlineKeyboardButton("📢 إرسال رسالة أخرى", callback_data="send_to_channel")],
-                [InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(
-                f"✅ *تم إرسال رسالتك المجهولة إلى القناة بنجاح!*\n\n"
-                f"ستظهر رسالتك في قناة {CHANNEL_USERNAME}",
+                chat_id=ADMIN_ID,
+                text=f"📋 *رسالة جديدة للمراجعة*\n\n"
+                f"📝 *المحتوى:* {message_text}\n"
+                f"👤 *المرسل:* `{anonymous_id}`\n\n"
+                f"استخدم لوحة المشرف للموافقة أو الرفض.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("👑 فتح لوحة المشرف", callback_data="pending_messages")
+                ]])
             )
         except Exception as e:
-            logger.error(f"Error sending to channel: {e}")
-            await update.message.reply_text(
-                "❌ حدث خطأ أثناء إرسال الرسالة للقناة."
-            )
+            logger.error(f"Error notifying admin: {e}")
+        
+        keyboard = [
+            [InlineKeyboardButton("📢 إرسال رسالة أخرى", callback_data="send_to_channel")],
+            [InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"✅ *تم استلام رسالتك للمراجعة!*\n\n"
+            f"سيتم مراجعتها من قبل المشرف ونشرها في قناة {CHANNEL_USERNAME} قريباً.\n"
+            f"شكراً لمشاركتك! 🎉",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup
+        )
         
         context.user_data.clear()
         return
@@ -696,7 +817,7 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=target_id,
                 text=f"🚫 *تم حظرك من استخدام البوت*\n\n"
                 f"السبب: {reason}\n\n"
-                f"للتواصل مع المشرفين: @pngo2",
+                f"للتواصل مع المشرفين: {CHANNEL_USERNAME}",
                 parse_mode=ParseMode.MARKDOWN
             )
         except:
@@ -778,32 +899,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-async def stats_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض إحصائيات كاملة - للمشرفين فقط"""
-    user_id = update.effective_user.id
-    
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ هذا الأمر للمشرفين فقط!")
-        return
-    
-    stats = db.get_global_stats()
-    
-    stats_text = f"""
-📊 *إحصائيات البوت العامة*
-
-👥 *المستخدمين:*
-- إجمالي المستخدمين: {stats['total_users']}
-- المستخدمين النشطين: {stats['active_users']}
-- المحظورين: {stats['banned_users']}
-
-📨 *الرسائل:*
-- إجمالي الرسائل: {stats['total_messages']}
-- رسائل القناة: {stats['channel_messages']}
-
-📅 *آخر تحديث:* {stats['last_update']}
-"""
-    await update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
-
 def main():
     """تشغيل البوت"""
     TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -825,7 +920,6 @@ def main():
     application.add_handler(CommandHandler("ban", ban_user))
     application.add_handler(CommandHandler("unban", unban_user))
     application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("stats_all", stats_all))
     
     # معالج الأزرار
     application.add_handler(CallbackQueryHandler(button_callback))
