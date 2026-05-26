@@ -1,0 +1,22 @@
+# ملفات Python
+__pycache__/
+*.py[cod]
+*.so
+
+# قاعدة البيانات
+*.db
+*.sqlite3
+
+# متغيرات البيئة
+.env
+
+# بيئة افتراضية
+venv/
+env/
+
+# ملفات IDE
+.vscode/
+.idea/
+
+# نظام
+.DS_Store
