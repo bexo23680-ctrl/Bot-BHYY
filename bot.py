@@ -1,8 +1,9 @@
 import os
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.constants import ParseMode, ChatMemberStatus
+from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 from database import Database
 import uuid
@@ -19,12 +20,12 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 # معرف المشرف الرئيسي
-ADMIN_ID = 8798182716  # معرفك الخاص
-ADMIN_IDS = [ADMIN_ID]  # قائمة المشرفين
+ADMIN_ID = 8798182716
+ADMIN_IDS = [ADMIN_ID]
 
 # معرف القناة
 CHANNEL_USERNAME = "@pngo2"
-CHANNEL_ID = "@pngo2"  # يجب أن يكون البوت مشرفاً في هذه القناة
+CHANNEL_ID = "@pngo2"
 
 async def check_subscription(user_id, context):
     """التحقق من اشتراك المستخدم في القناة"""
@@ -34,7 +35,6 @@ async def check_subscription(user_id, context):
             user_id=user_id
         )
         
-        # التحقق من حالة العضوية
         if member.status in ['member', 'administrator', 'creator']:
             return True
         else:
@@ -74,6 +74,74 @@ async def subscription_required(update: Update, context: ContextTypes.DEFAULT_TY
 async def is_admin(user_id):
     """التحقق مما إذا كان المستخدم مشرفاً"""
     return user_id in ADMIN_IDS
+
+async def show_next_pending_message(query, context):
+    """عرض الرسالة المعلقة التالية"""
+    try:
+        pending = db.get_pending_messages()
+        
+        if not pending:
+            keyboard = [[InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.edit_message_text(
+                    "📋 *لا توجد رسائل معلقة للمراجعة*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            except:
+                try:
+                    await query.message.reply_text(
+                        "📋 *لا توجد رسائل معلقة للمراجعة*",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=reply_markup
+                    )
+                except:
+                    pass
+            return
+        
+        # عرض أول رسالة معلقة
+        msg = pending[0]
+        message_text = f"""
+📋 *رسالة معلقة للمراجعة* (1/{len(pending)})
+
+📝 *المحتوى:*
+{msg['content']}
+
+📅 *التاريخ:* {msg['created_at']}
+👤 *معرف المرسل:* `{msg['anonymous_id']}`
+"""
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ قبول", callback_data=f"approve_{msg['id']}"),
+                InlineKeyboardButton("❌ رفض", callback_data=f"reject_{msg['id']}")
+            ],
+            [InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # تخزين قائمة الرسائل المعلقة
+        context.user_data['pending_messages'] = pending
+        context.user_data['current_pending_id'] = msg['id']
+        
+        try:
+            await query.edit_message_text(
+                message_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=reply_markup
+            )
+        except:
+            try:
+                await query.message.reply_text(
+                    message_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            except:
+                pass
+    except Exception as e:
+        logger.error(f"Error in show_next_pending_message: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /start"""
@@ -122,8 +190,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # إضافة أزرار المشرفين
     if await is_admin(user_id):
+        pending_count = len(db.get_pending_messages())
         keyboard.append([InlineKeyboardButton("👑 لوحة المشرف", callback_data="admin_panel")])
-        keyboard.append([InlineKeyboardButton("📋 الرسائل المعلقة", callback_data="pending_messages")])
+        if pending_count > 0:
+            keyboard.append([InlineKeyboardButton(f"📋 الرسائل المعلقة ({pending_count})", callback_data="pending_messages")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -232,16 +302,25 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             
             if await is_admin(user_id):
+                pending_count = len(db.get_pending_messages())
                 keyboard.append([InlineKeyboardButton("👑 لوحة المشرف", callback_data="admin_panel")])
-                keyboard.append([InlineKeyboardButton("📋 الرسائل المعلقة", callback_data="pending_messages")])
+                if pending_count > 0:
+                    keyboard.append([InlineKeyboardButton(f"📋 الرسائل المعلقة ({pending_count})", callback_data="pending_messages")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await query.edit_message_text(
-                "🎭 *القائمة الرئيسية*\nاختر ما تريد القيام به:",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=reply_markup
-            )
+            try:
+                await query.edit_message_text(
+                    "🎭 *القائمة الرئيسية*\nاختر ما تريد القيام به:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            except:
+                await query.message.reply_text(
+                    "🎭 *القائمة الرئيسية*\nاختر ما تريد القيام به:",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
         
         # إرسال رسالة للقناة
         elif callback_data == "send_to_channel":
@@ -444,12 +523,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             pending_count = len(db.get_pending_messages())
+            banned_count = len(db.get_banned_users())
             
             admin_text = f"""
 👑 *لوحة تحكم المشرف*
 
 📊 *معلومات سريعة:*
 - الرسائل المعلقة: {pending_count}
+- المستخدمين المحظورين: {banned_count}
 
 🛠 *الأوامر المتاحة:*
 - `/ban [user_id]` - حظر مستخدم
@@ -475,47 +556,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ هذا الأمر للمشرفين فقط!", show_alert=True)
                 return
             
-            pending = db.get_pending_messages()
-            
-            if not pending:
-                keyboard = [[InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await query.edit_message_text(
-                    "📋 *لا توجد رسائل معلقة للمراجعة*",
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup
-                )
-            else:
-                # عرض أول رسالة معلقة
-                msg = pending[0]
-                message_text = f"""
-📋 *رسالة معلقة للمراجعة* (1/{len(pending)})
-
-📝 *المحتوى:*
-{msg['content']}
-
-📅 *التاريخ:* {msg['created_at']}
-👤 *معرف المرسل:* `{msg['anonymous_id']}`
-"""
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ قبول", callback_data=f"approve_{msg['id']}"),
-                        InlineKeyboardButton("❌ رفض", callback_data=f"reject_{msg['id']}")
-                    ],
-                    [InlineKeyboardButton("🔙 العودة للوحة المشرف", callback_data="admin_panel")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                # تخزين قائمة الرسائل المعلقة
-                context.user_data['pending_messages'] = pending
-                context.user_data['pending_index'] = 0
-                
-                await query.edit_message_text(
-                    message_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=reply_markup
-                )
+            await show_next_pending_message(query, context)
         
         # قبول رسالة للقناة
         elif callback_data.startswith("approve_"):
@@ -525,13 +566,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             message_id = int(callback_data.replace("approve_", ""))
             
+            # التحقق من أن هذه هي الرسالة المعروضة حالياً
+            current_pending_id = context.user_data.get('current_pending_id')
+            if current_pending_id and current_pending_id != message_id:
+                await query.answer("⚠️ هذه ليست الرسالة المعروضة حالياً!", show_alert=True)
+                return
+            
+            # التحقق مما إذا كانت الرسالة لا تزال معلقة
+            if not db.is_message_pending(message_id):
+                await query.answer("⚠️ هذه الرسالة تمت معالجتها بالفعل!", show_alert=True)
+                # تحديث القائمة مباشرة
+                await show_next_pending_message(query, context)
+                return
+            
+            # منع المعالجة المتكررة - تعطيل فوري
+            db.lock_message(message_id)
+            
             # الحصول على محتوى الرسالة
             message_content = db.get_pending_message_content(message_id)
             
             if message_content:
                 try:
-                    # نشر الرسالة في القناة
-                    await context.bot.send_message(
+                    # نشر الرسالة في القناة مرة واحدة فقط
+                    sent_message = await context.bot.send_message(
                         chat_id=CHANNEL_ID,
                         text=f"📨 *رسالة مجهولة جديدة:*\n\n{message_content}\n\n💡 *تم الإرسال عبر بوت المراسلة المجهولة*",
                         parse_mode=ParseMode.MARKDOWN
@@ -540,14 +597,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # تحديث حالة الرسالة إلى منشورة
                     db.approve_message(message_id)
                     
-                    await query.answer("✅ تم نشر الرسالة في القناة!", show_alert=True)
+                    # تحديث الرسالة في المحادثة
+                    try:
+                        await query.edit_message_text(
+                            f"✅ *تم نشر الرسالة بنجاح!*\n\n"
+                            f"المحتوى: {message_content[:100]}...",
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("📋 عرض الرسائل المعلقة", callback_data="pending_messages")
+                            ]])
+                        )
+                    except:
+                        pass
+                    
+                    # انتظار قصير
+                    await asyncio.sleep(1)
                     
                     # عرض الرسالة المعلقة التالية
-                    await button_callback(update, context)
+                    await show_next_pending_message(query, context)
                     
                 except Exception as e:
                     logger.error(f"Error posting to channel: {e}")
-                    await query.answer("❌ فشل النشر في القناة. تأكد من صلاحيات البوت!", show_alert=True)
+                    # فك القفل في حالة الفشل
+                    db.unlock_message(message_id)
+                    await query.answer("❌ فشل النشر. تأكد من صلاحيات البوت في القناة!", show_alert=True)
             else:
                 await query.answer("❌ الرسالة غير موجودة!", show_alert=True)
         
@@ -559,13 +632,40 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             message_id = int(callback_data.replace("reject_", ""))
             
+            # التحقق من أن هذه هي الرسالة المعروضة حالياً
+            current_pending_id = context.user_data.get('current_pending_id')
+            if current_pending_id and current_pending_id != message_id:
+                await query.answer("⚠️ هذه ليست الرسالة المعروضة حالياً!", show_alert=True)
+                return
+            
+            # التحقق مما إذا كانت الرسالة لا تزال معلقة
+            if not db.is_message_pending(message_id):
+                await query.answer("⚠️ هذه الرسالة تمت معالجتها بالفعل!", show_alert=True)
+                await show_next_pending_message(query, context)
+                return
+            
+            # منع المعالجة المتكررة
+            db.lock_message(message_id)
+            
             # رفض الرسالة
             db.reject_message(message_id)
             
-            await query.answer("❌ تم رفض الرسالة!", show_alert=True)
+            # تحديث الرسالة في المحادثة
+            try:
+                await query.edit_message_text(
+                    "❌ *تم رفض الرسالة*",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📋 عرض الرسائل المعلقة", callback_data="pending_messages")
+                    ]])
+                )
+            except:
+                pass
             
-            # عرض الرسالة المعلقة التالية
-            await button_callback(update, context)
+            await asyncio.sleep(1)
+            
+            # عرض الرسالة التالية
+            await show_next_pending_message(query, context)
         
         # قائمة المحظورين
         elif callback_data == "banned_list":
@@ -656,17 +756,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # إرسال للقناة (نظام المراجعة)
     if state == 'sending_to_channel':
+        # التحقق من طول الرسالة
+        if len(message_text) < 5:
+            await update.message.reply_text("❌ الرسالة قصيرة جداً. اكتب رسالة أطول.")
+            return
+        
         # حفظ الرسالة كرسالة معلقة للمراجعة
         anonymous_id = db.get_anonymous_id(user_id)
         db.add_pending_message(user_id, anonymous_id, message_text)
         
         # إرسال إشعار للمشرف
         try:
+            pending_count = len(db.get_pending_messages())
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=f"📋 *رسالة جديدة للمراجعة*\n\n"
                 f"📝 *المحتوى:* {message_text}\n"
-                f"👤 *المرسل:* `{anonymous_id}`\n\n"
+                f"👤 *المرسل:* `{anonymous_id}`\n"
+                f"📊 *عدد الرسائل المعلقة:* {pending_count}\n\n"
                 f"استخدم لوحة المشرف للموافقة أو الرفض.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup([[
@@ -765,170 +872,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         reply_markup=reply_markup
                     )
                 except Exception as e:
-                    logger.error(f"Error sending message: {e}")
-                    await update.message.reply_text(
-                        "❌ حدث خطأ أثناء إرسال الرسالة."
-                    )
-        else:
-            await update.message.reply_text(
-                "❌ رابط غير صالح أو منتهي الصلاحية."
-            )
-        
-        context.user_data.clear()
-        return
-    
-    # رسالة افتراضية
-    keyboard = [[InlineKeyboardButton("🔙 العودة للقائمة", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "👋 أهلاً! استخدم القائمة للتنقل أو أرسل /start.",
-        reply_markup=reply_markup
-    )
-
-# أوامر المشرفين
-async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر حظر مستخدم - للمشرفين فقط"""
-    user_id = update.effective_user.id
-    
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ هذا الأمر للمشرفين فقط!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ استخدم الأمر كالتالي: `/ban [user_id]`", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    try:
-        target_id = int(context.args[0])
-        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "بدون سبب"
-        
-        db.ban_user(target_id, reason)
-        
-        await update.message.reply_text(
-            f"✅ تم حظر المستخدم `{target_id}`\n"
-            f"السبب: {reason}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        # محاولة إعلام المستخدم المحظور
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text=f"🚫 *تم حظرك من استخدام البوت*\n\n"
-                f"السبب: {reason}\n\n"
-                f"للتواصل مع المشرفين: {CHANNEL_USERNAME}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except:
-            pass
-            
-    except ValueError:
-        await update.message.reply_text("❌ معرف المستخدم يجب أن يكون رقماً!")
-
-async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر فك حظر مستخدم - للمشرفين فقط"""
-    user_id = update.effective_user.id
-    
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ هذا الأمر للمشرفين فقط!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ استخدم الأمر كالتالي: `/unban [user_id]`", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    try:
-        target_id = int(context.args[0])
-        
-        db.unban_user(target_id)
-        
-        await update.message.reply_text(
-            f"✅ تم فك حظر المستخدم `{target_id}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
-        # محاولة إعلام المستخدم
-        try:
-            await context.bot.send_message(
-                chat_id=target_id,
-                text="✅ *تم فك حظرك من البوت*\n\nيمكنك الآن استخدام البوت مرة أخرى.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        except:
-            pass
-            
-    except ValueError:
-        await update.message.reply_text("❌ معرف المستخدم يجب أن يكون رقماً!")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر إرسال رسالة للجميع - للمشرفين فقط"""
-    user_id = update.effective_user.id
-    
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ هذا الأمر للمشرفين فقط!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("❌ استخدم الأمر كالتالي: `/broadcast [الرسالة]`", parse_mode=ParseMode.MARKDOWN)
-        return
-    
-    message = " ".join(context.args)
-    users = db.get_all_users()
-    
-    sent_count = 0
-    failed_count = 0
-    
-    await update.message.reply_text(f"📤 جاري إرسال الرسالة إلى {len(users)} مستخدم...")
-    
-    for user in users:
-        try:
-            await context.bot.send_message(
-                chat_id=user['user_id'],
-                text=f"📢 *رسالة من المشرفين:*\n\n{message}",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            sent_count += 1
-        except:
-            failed_count += 1
-    
-    await update.message.reply_text(
-        f"✅ *تم إرسال الرسالة*\n\n"
-        f"✓ تم الإرسال: {sent_count}\n"
-        f"✗ فشل الإرسال: {failed_count}",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-def main():
-    """تشغيل البوت"""
-    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-    
-    if not TOKEN:
-        logger.error("لم يتم العثور على TELEGRAM_BOT_TOKEN!")
-        return
-    
-    logger.info("جاري تشغيل البوت...")
-    
-    application = Application.builder().token(TOKEN).build()
-    
-    # الأوامر الأساسية
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("cancel", cancel))
-    
-    # أوامر المشرفين
-    application.add_handler(CommandHandler("ban", ban_user))
-    application.add_handler(CommandHandler("unban", unban_user))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    
-    # معالج الأزرار
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # معالج الرسائل
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("البوت جاهز للعمل!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+                    logger.error
